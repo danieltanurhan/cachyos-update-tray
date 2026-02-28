@@ -68,3 +68,4 @@ Default values:
 - Reboot detection is heuristic-based for Arch: if reboot-related packages were upgraded after your current boot, status changes to `reboot required`.
 - If no terminal emulator is found, use manual upgrade from a terminal.
 - Focusing an already-running upgrade terminal uses optional helpers (`wmctrl` or `xdotool`) and may be limited on some Wayland sessions.
+- `Upgrade All` automatically uses `paru -Syu` when AUR updates are pending and `paru` is available.

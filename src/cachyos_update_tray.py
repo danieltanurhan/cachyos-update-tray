@@ -237,12 +237,14 @@ class UpdateTrayApp:
         self.indicator = self._build_indicator()
         self.menu = self._build_menu()
         self.indicator.set_menu(self.menu)
+        self._refresh_menu_runtime_state()
 
         GLib.timeout_add_seconds(5, self._timer_initial_check)
         interval_seconds = max(
             60, int(self.config.get("check_interval_minutes", 30)) * 60
         )
         GLib.timeout_add_seconds(interval_seconds, self._timer_periodic_check)
+        GLib.timeout_add_seconds(3, self._timer_runtime_state)
 
     def _build_indicator(self):
         # Try Ayatana first (default on many Arch desktops), fallback to legacy.
@@ -269,6 +271,7 @@ class UpdateTrayApp:
 
     def _build_menu(self) -> Gtk.Menu:
         menu = Gtk.Menu()
+        menu.connect("show", self._on_menu_show)
 
         self.status_item = Gtk.MenuItem(label="Status: waiting for first check")
         self.status_item.set_sensitive(False)
@@ -306,6 +309,25 @@ class UpdateTrayApp:
 
         menu.show_all()
         return menu
+
+    def _on_menu_show(self, _menu: Gtk.Menu) -> None:
+        self._refresh_menu_runtime_state()
+
+    def _timer_runtime_state(self) -> bool:
+        self._refresh_menu_runtime_state()
+        return True
+
+    def _is_upgrade_running(self) -> bool:
+        if self._active_upgrade_proc is None:
+            return False
+        if self._active_upgrade_proc.poll() is not None:
+            self._active_upgrade_proc = None
+            return False
+        return True
+
+    def _refresh_menu_runtime_state(self) -> None:
+        running = self._is_upgrade_running()
+        self.focus_upgrade_item.set_visible(running)
 
     def _timer_initial_check(self) -> bool:
         self.check_updates_async(notify=True)
@@ -598,7 +620,7 @@ class UpdateTrayApp:
         return False, ""
 
     def _launch_command_in_terminal(self, command_text: str) -> bool:
-        if self._active_upgrade_proc is not None and self._active_upgrade_proc.poll() is None:
+        if self._is_upgrade_running():
             if not self._bring_existing_upgrade_terminal_to_front():
                 self._show_info_dialog(
                     "Upgrade already running",
@@ -631,11 +653,31 @@ class UpdateTrayApp:
         self._active_upgrade_proc = subprocess.Popen(  # noqa: S603
             terminal_cmd + ["bash", "-lc", shell_script]
         )
+        self._refresh_menu_runtime_state()
         return True
 
+    def _build_upgrade_all_command(self) -> Tuple[str, str]:
+        base_cmd = str(self.config.get("upgrade_command", "sudo pacman -Syu"))
+        include_aur = bool(self.config.get("include_aur", True))
+        aur_pending = len(self.aur_updates) > 0
+
+        if include_aur and aur_pending:
+            if shutil.which("paru"):
+                return (
+                    "paru -Syu",
+                    "AUR updates are pending. This will run paru for full upgrade.",
+                )
+            return (
+                base_cmd,
+                "AUR updates are pending, but paru is not installed. "
+                "This run will only upgrade official repositories.",
+            )
+
+        return base_cmd, ""
+
     def _run_upgrade_all(self) -> bool:
-        upgrade_cmd = str(self.config.get("upgrade_command", "sudo pacman -Syu"))
-        if not self._show_upgrade_confirm_dialog(upgrade_cmd):
+        upgrade_cmd, warning = self._build_upgrade_all_command()
+        if not self._show_upgrade_confirm_dialog(upgrade_cmd, warning_text=warning):
             return False
         return self._launch_command_in_terminal(upgrade_cmd)
 
